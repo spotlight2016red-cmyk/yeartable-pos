@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type MenuItem = {
   id: number;
   name: string;
   price: number;
   isActive: boolean;
-  tags?: string[]; // タグ（例: ["サラダ", "一品"]）
+  tags?: string[]; // 例: ["おすすめ", "一品"]
 };
 
 type CartItem = {
@@ -33,12 +33,7 @@ type Order = {
   tableId: string;
   tableName: string;
   people: number;
-  items: Array<{
-    id: number;
-    name: string;
-    price: number;
-    qty: number;
-  }>;
+  items: Array<{ id: number; name: string; price: number; qty: number }>;
   total: number;
   createdAt: string;
   updatedAt: string;
@@ -47,321 +42,334 @@ type Order = {
 
 type PaymentMethod = "cash" | "card" | "other";
 
+const LS = {
+  menuItems: "menuItems",
+  orders: "register_orders",
+  tableConfigs: "table_configs",
+} as const;
+
+function safeJsonParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function calcTotal(items: CartItem[]) {
+  return items.reduce((sum, it) => sum + it.price * it.qty, 0);
+}
+
 export default function CashierPage() {
   const router = useRouter();
+  const sp = useSearchParams();
+
+  // URL: /pos/cashier?tableId=xxx&table=T-02 も /pos/cashier?table=T-02 も拾う
+  const tableIdParam = sp.get("tableId") ? decodeURIComponent(sp.get("tableId")!) : "";
+  const tableNameParam = sp.get("table") ? decodeURIComponent(sp.get("table")!) : "";
+  const hasTableContext = Boolean(tableIdParam || tableNameParam);
+
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [cart, setCart] = useState<CartItem[]>([]);
+
+  // 伝票（既存）+ 追加分（今回タップ）を分けて見せたいので、stateを分割
+  const [baseOrder, setBaseOrder] = useState<Order | null>(null);
+  const [addCart, setAddCart] = useState<CartItem[]>([]);
+
+  // checkout
   const [showCheckout, setShowCheckout] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [cashReceived, setCashReceived] = useState("");
-  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
-  const [selectedTableName, setSelectedTableName] = useState<string>("");
-  const [checkoutMode, setCheckoutMode] = useState<"standalone" | "table">("standalone");
-  const [showTableSelect, setShowTableSelect] = useState(false);
-  const [tableConfigs, setTableConfigs] = useState<TableConfig[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [miniMapFloor, setMiniMapFloor] = useState<string>("1F");
 
-  // メニューを読み込み
+  // debounce save
+  const saveTimer = useRef<number | null>(null);
+  const didInit = useRef(false);
+
+  // ---- load menu
   useEffect(() => {
-    const savedMenu = localStorage.getItem("menuItems");
-    if (savedMenu) {
-      try {
-        const menuData: MenuItem[] = JSON.parse(savedMenu);
-        const activeMenu = menuData.filter((item) => item.isActive);
-        setMenu(activeMenu);
-      } catch (e) {
-        console.error("メニュー読み込みエラー:", e);
+    const saved = localStorage.getItem(LS.menuItems);
+    const list = safeJsonParse<MenuItem[]>(saved, []);
+    const migrated = list.map((x) => ({ ...x, tags: x.tags || [] }));
+    setMenu(migrated.filter((x) => x.isActive));
+  }, []);
+
+  // ---- load base order (open)
+  useEffect(() => {
+    const load = () => {
+      const orders = safeJsonParse<Order[]>(localStorage.getItem(LS.orders), []);
+      // まず tableId で探す。無ければ tableName で探す（過去互換）
+      const found =
+        (tableIdParam
+          ? orders.find((o) => o.status === "open" && o.tableId === tableIdParam)
+          : undefined) ||
+        (tableNameParam
+          ? orders
+              .filter((o) => o.status === "open" && o.tableName === tableNameParam)
+              .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0]
+          : undefined) ||
+        null;
+
+      setBaseOrder(found);
+
+      // ここ重要：初回ロード時は「追加分カート」は空にする（既存は上に表示）
+      setAddCart([]);
+    };
+
+    load();
+    // floor-map から戻ってきた時などに即追従したい
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableIdParam, tableNameParam]);
+
+  // ---- derived: base items, base total
+  const baseItems: CartItem[] = useMemo(() => {
+    if (!baseOrder) return [];
+    return baseOrder.items.map((x) => ({ id: x.id, name: x.name, price: x.price, qty: x.qty }));
+  }, [baseOrder]);
+
+  const baseTotal = useMemo(() => calcTotal(baseItems), [baseItems]);
+  const addTotal = useMemo(() => calcTotal(addCart), [addCart]);
+  const grandTotal = baseTotal + addTotal;
+
+  // ---- filtered menu
+  const filteredMenu = useMemo(() => {
+    if (!searchQuery.trim()) return menu;
+    const q = searchQuery.toLowerCase();
+    return menu.filter((it) => it.name.toLowerCase().includes(q));
+  }, [menu, searchQuery]);
+
+  // ---- group menu by main tag
+  const menuGrouped = useMemo(() => {
+    const by: Record<string, MenuItem[]> = {};
+    for (const it of filteredMenu) {
+      const tag = it.tags && it.tags.length > 0 ? it.tags[0] : "その他";
+      if (!by[tag]) by[tag] = [];
+      by[tag].push(it);
+    }
+    return Object.keys(by).sort().map((k) => [k, by[k]] as const);
+  }, [filteredMenu]);
+
+  // ---- save additions into register_orders (open order) immediately (debounced)
+  const scheduleSave = (nextAddCart: CartItem[]) => {
+    if (!hasTableContext) return; // 単発会計だけの時は保存しない（会計確定でclosed保存）
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+
+    saveTimer.current = window.setTimeout(() => {
+      const now = new Date().toISOString();
+
+      const orders = safeJsonParse<Order[]>(localStorage.getItem(LS.orders), []);
+
+      // target order: baseOrder があればそれ。無ければ新規に作る（tableName だけ来たケース等）
+      let target = baseOrder
+        ? orders.find((o) => o.id === baseOrder.id) || null
+        : null;
+
+      if (!target) {
+        // tableId が空の時、table_configs から引いて補完する
+        const configs = safeJsonParse<TableConfig[]>(localStorage.getItem(LS.tableConfigs), []);
+        const cfg =
+          (tableIdParam ? configs.find((c) => c.id === tableIdParam) : undefined) ||
+          (tableNameParam ? configs.find((c) => c.label === tableNameParam) : undefined);
+
+        const resolvedTableId = tableIdParam || cfg?.id || `table_${Date.now()}`;
+        const resolvedTableName = tableNameParam || cfg?.label || "未設定";
+
+        target = {
+          id: `order_${Date.now()}`,
+          status: "open",
+          tableId: resolvedTableId,
+          tableName: resolvedTableName,
+          people: 1,
+          items: [],
+          total: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        orders.push(target);
+      }
+
+      // merge: base(target.items) + nextAddCart
+      const merged = [...target.items.map((x) => ({ ...x }))];
+
+      for (const add of nextAddCart) {
+        const idx = merged.findIndex((x) => x.id === add.id);
+        if (idx >= 0) merged[idx].qty += add.qty;
+        else merged.push({ id: add.id, name: add.name, price: add.price, qty: add.qty });
+      }
+
+      const newTotal = merged.reduce((s, x) => s + x.price * x.qty, 0);
+
+      const updatedOrders = orders.map((o) =>
+        o.id === target!.id
+          ? {
+              ...o,
+              items: merged,
+              total: newTotal,
+              updatedAt: now,
+            }
+          : o
+      );
+
+      localStorage.setItem(LS.orders, JSON.stringify(updatedOrders));
+      window.dispatchEvent(new Event("ordersUpdated"));
+
+      // UI側：baseOrder を追従させ、追加分は“保存済み”としてクリア
+      const newBase = updatedOrders.find((o) => o.id === target!.id) || null;
+      setBaseOrder(newBase);
+      setAddCart([]);
+    }, 350);
+  };
+
+  // 初回レンダリング直後の addCart 空 を保存しない（事故防止）
+  useEffect(() => {
+    if (!didInit.current) {
+      didInit.current = true;
+      return;
+    }
+    // addCartが増減したら即保存予約
+    scheduleSave(addCart);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addCart]);
+
+  // ---- cart ops (addCart only)
+  const addToCart = (item: MenuItem) => {
+    setAddCart((prev) => {
+      const ex = prev.find((x) => x.id === item.id);
+      if (ex) return prev.map((x) => (x.id === item.id ? { ...x, qty: x.qty + 1 } : x));
+      return [...prev, { id: item.id, name: item.name, price: item.price, qty: 1 }];
+    });
+  };
+
+  const updateCartQty = (itemId: number, delta: number) => {
+    setAddCart((prev) =>
+      prev
+        .map((x) => {
+          if (x.id !== itemId) return x;
+          const q = x.qty + delta;
+          if (q <= 0) return null;
+          return { ...x, qty: q };
+        })
+        .filter((x): x is CartItem => x !== null)
+    );
+  };
+
+  const removeFromCart = (itemId: number) => {
+    setAddCart((prev) => prev.filter((x) => x.id !== itemId));
+  };
+
+  const clearAddCart = () => {
+    if (addCart.length === 0) return;
+    if (confirm("追加分カートをクリアしますか？")) setAddCart([]);
+  };
+
+  // ---- back (0円事故防止：新規で空なら伝票削除)
+  const handleBack = () => {
+    if (!hasTableContext) {
+      router.push("/pos");
+      return;
+    }
+
+    // 保存待ちがあれば先に反映させる
+    if (addCart.length > 0) {
+      scheduleSave(addCart);
+    } else {
+      // addCartが空の時、baseOrderが存在し total=0 かつ items=0 なら削除
+      if (baseOrder && baseOrder.status === "open" && baseOrder.total === 0 && baseOrder.items.length === 0) {
+        const orders = safeJsonParse<Order[]>(localStorage.getItem(LS.orders), []);
+        const next = orders.filter((o) => o.id !== baseOrder.id);
+        localStorage.setItem(LS.orders, JSON.stringify(next));
+        window.dispatchEvent(new Event("ordersUpdated"));
       }
     }
 
-    // メニュー更新イベントをリッスン
-    const handleMenuUpdate = () => {
-      const savedMenu = localStorage.getItem("menuItems");
-      if (savedMenu) {
-        try {
-          const menuData: MenuItem[] = JSON.parse(savedMenu);
-          // マイグレーション: tagsがない場合は空配列を設定
-          const migratedMenu = menuData.map((item) => ({
-            ...item,
-            tags: item.tags || [],
-          }));
-          const activeMenu = migratedMenu.filter((item) => item.isActive);
-          setMenu(activeMenu);
-        } catch (e) {
-          console.error("メニュー更新エラー:", e);
-        }
-      }
-    };
-
-    window.addEventListener("menuUpdated", handleMenuUpdate);
-    return () => {
-      window.removeEventListener("menuUpdated", handleMenuUpdate);
-    };
-  }, []);
-
-  // テーブル設定と注文データを読み込み
-  useEffect(() => {
-    const loadTableConfigs = () => {
-      const savedConfigs = localStorage.getItem("table_configs");
-      if (savedConfigs) {
-        try {
-          const configs: TableConfig[] = JSON.parse(savedConfigs);
-          setTableConfigs(configs);
-        } catch (e) {
-          console.error("Failed to load table configs:", e);
-        }
-      }
-    };
-
-    const loadOrders = () => {
-      const ordersData = localStorage.getItem("register_orders");
-      if (ordersData) {
-        try {
-          const ordersList: Order[] = JSON.parse(ordersData);
-          setOrders(ordersList);
-        } catch (e) {
-          console.error("Failed to load orders:", e);
-        }
-      }
-    };
-
-    loadTableConfigs();
-    loadOrders();
-
-    const interval = setInterval(() => {
-      loadOrders();
-    }, 5000);
-
-    const handleTableConfigUpdate = () => {
-      loadTableConfigs();
-    };
-    window.addEventListener("tableConfigUpdated", handleTableConfigUpdate);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("tableConfigUpdated", handleTableConfigUpdate);
-    };
-  }, []);
-
-  // 検索でフィルタリング
-  const filteredMenu = useMemo(() => {
-    if (!searchQuery.trim()) return menu;
-    const query = searchQuery.toLowerCase();
-    return menu.filter((item) => item.name.toLowerCase().includes(query));
-  }, [menu, searchQuery]);
-
-  // 合計金額を計算
-  const total = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.price * item.qty, 0);
-  }, [cart]);
-
-  // 商品をカートに追加
-  const addToCart = (item: MenuItem) => {
-    setCart((prevCart) => {
-      const existingItem = prevCart.find((cartItem) => cartItem.id === item.id);
-      if (existingItem) {
-        return prevCart.map((cartItem) =>
-          cartItem.id === item.id
-            ? { ...cartItem, qty: cartItem.qty + 1 }
-            : cartItem
-        );
-      } else {
-        return [
-          ...prevCart,
-          { id: item.id, name: item.name, price: item.price, qty: 1 },
-        ];
-      }
-    });
+    router.push("/pos");
   };
 
-  // カートの数量を変更
-  const updateCartQuantity = (itemId: number, delta: number) => {
-    setCart((prevCart) => {
-      return prevCart
-        .map((item) => {
-          if (item.id === itemId) {
-            const newQty = item.qty + delta;
-            if (newQty <= 0) return null;
-            return { ...item, qty: newQty };
-          }
-          return item;
-        })
-        .filter((item): item is CartItem => item !== null);
-    });
-  };
-
-  // カートから削除
-  const removeFromCart = (itemId: number) => {
-    setCart((prevCart) => prevCart.filter((item) => item.id !== itemId));
-  };
-
-  // 会計画面へ
-  const goToCheckout = () => {
-    if (cart.length === 0) return;
+  // ---- checkout modal
+  const goCheckout = () => {
     setShowCheckout(true);
-    setCashReceived("");
     setPaymentMethod("cash");
+    setCashReceived("");
   };
 
-  // お釣りを計算
   const change = useMemo(() => {
-    if (paymentMethod !== "cash" || !cashReceived) return 0;
-    const received = parseInt(cashReceived, 10) || 0;
-    return Math.max(0, received - total);
-  }, [paymentMethod, cashReceived, total]);
+    if (paymentMethod !== "cash") return 0;
+    const received = parseInt(cashReceived || "0", 10) || 0;
+    return Math.max(0, received - grandTotal);
+  }, [paymentMethod, cashReceived, grandTotal]);
 
-  // 支払い確定
   const confirmPayment = () => {
-    if (cart.length === 0) return;
+    if (grandTotal <= 0) return;
 
-    // 現金の場合、受取金額のバリデーション
     if (paymentMethod === "cash") {
-      const received = parseInt(cashReceived, 10) || 0;
-      if (received < total) {
-        alert(`受取金額が不足しています。\n合計: ¥${total.toLocaleString()}\n受取: ¥${received.toLocaleString()}`);
+      const received = parseInt(cashReceived || "0", 10) || 0;
+      if (received < grandTotal) {
+        alert(`受取金額が不足しています。\n合計: ¥${grandTotal.toLocaleString()}\n受取: ¥${received.toLocaleString()}`);
         return;
       }
     }
 
     const now = new Date().toISOString();
-    const timestamp = now;
+    const methodText = { cash: "現金", card: "カード", other: "その他" }[paymentMethod];
 
-    if (checkoutMode === "table" && selectedTableId) {
-      // テーブルに追加する場合
-      const ordersData = localStorage.getItem("register_orders");
-      const orders: Order[] = ordersData ? JSON.parse(ordersData) : [];
-      
-      const existingOrder = orders.find(
-        (o) => o.tableId === selectedTableId && o.status === "open"
-      );
+    // テーブル文脈があるなら、そのopen伝票を closed にする（会計確定）
+    if (hasTableContext) {
+      const orders = safeJsonParse<Order[]>(localStorage.getItem(LS.orders), []);
+      // 現在の baseOrder を対象（念のため tableId/name でも探索）
+      const target =
+        (baseOrder ? orders.find((o) => o.id === baseOrder.id) : undefined) ||
+        (tableIdParam ? orders.find((o) => o.status === "open" && o.tableId === tableIdParam) : undefined) ||
+        (tableNameParam ? orders.find((o) => o.status === "open" && o.tableName === tableNameParam) : undefined);
 
-      if (existingOrder) {
-        // 既存の注文に追加
-        const mergedItems = [...existingOrder.items];
-        cart.forEach((cartItem) => {
-          const existingIndex = mergedItems.findIndex((item) => item.id === cartItem.id);
-          if (existingIndex >= 0) {
-            mergedItems[existingIndex] = {
-              ...mergedItems[existingIndex],
-              qty: mergedItems[existingIndex].qty + cartItem.qty,
-            };
-          } else {
-            mergedItems.push({
-              id: cartItem.id,
-              name: cartItem.name,
-              price: cartItem.price,
-              qty: cartItem.qty,
-            });
-          }
-        });
-
-        const newTotal = mergedItems.reduce(
-          (sum, item) => sum + item.price * item.qty,
-          0
-        );
-
-        const updatedOrders = orders.map((o) =>
-          o.id === existingOrder.id
-            ? {
-                ...o,
-                items: mergedItems,
-                total: newTotal,
-                updatedAt: now,
-              }
+      if (target) {
+        const updated = orders.map((o) =>
+          o.id === target.id
+            ? { ...o, status: "closed", closedAt: now, updatedAt: now, total: o.total }
             : o
         );
-
-        localStorage.setItem("register_orders", JSON.stringify(updatedOrders));
-        window.dispatchEvent(new Event("ordersUpdated"));
-      } else {
-        // 新規注文を作成
-        const tableConfig = tableConfigs.find((c) => c.id === selectedTableId);
-        const tableName = tableConfig?.label || selectedTableName || "未設定";
-
-        const newOrder: Order = {
-          id: `order_${Date.now()}`,
-          status: "open",
-          tableId: selectedTableId,
-          tableName: tableName,
-          people: 1,
-          items: cart.map((item) => ({
-            id: item.id,
-            name: item.name,
-            price: item.price,
-            qty: item.qty,
-          })),
-          total: total,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        orders.push(newOrder);
-        localStorage.setItem("register_orders", JSON.stringify(orders));
+        localStorage.setItem(LS.orders, JSON.stringify(updated));
         window.dispatchEvent(new Event("ordersUpdated"));
       }
     } else {
-      // テーブルなし単発会計（register_ordersにclosed状態で保存）
-      const ordersData = localStorage.getItem("register_orders");
-      const orders: Order[] = ordersData ? JSON.parse(ordersData) : [];
-
-      const standaloneOrder: Order = {
+      // 単発会計（既存ベース無し）: addCart を closed で保存
+      const orders = safeJsonParse<Order[]>(localStorage.getItem(LS.orders), []);
+      const standalone: Order = {
         id: `order_${Date.now()}`,
         status: "closed",
         tableId: "",
         tableName: "単発会計",
         people: 1,
-        items: cart.map((item) => ({
-          id: item.id,
-          name: item.name,
-          price: item.price,
-          qty: item.qty,
-        })),
-        total: total,
+        items: addCart.map((x) => ({ id: x.id, name: x.name, price: x.price, qty: x.qty })),
+        total: addTotal,
         createdAt: now,
         updatedAt: now,
         closedAt: now,
       };
-
-      orders.push(standaloneOrder);
-      localStorage.setItem("register_orders", JSON.stringify(orders));
+      orders.push(standalone);
+      localStorage.setItem(LS.orders, JSON.stringify(orders));
       window.dispatchEvent(new Event("ordersUpdated"));
     }
 
-    // カートをクリア
-    setCart([]);
-    setSearchQuery("");
     setShowCheckout(false);
-    setCheckoutMode("standalone");
-    setSelectedTableId(null);
-    setSelectedTableName("");
-
-    // 成功メッセージ
-    const methodText = {
-      cash: "現金",
-      card: "カード",
-      other: "その他",
-    }[paymentMethod];
+    setAddCart([]);
+    setSearchQuery("");
 
     alert(
-      `決済完了！\n支払い方法: ${methodText}\n合計: ¥${total.toLocaleString()}${
-        paymentMethod === "cash" ? `\n受取: ¥${parseInt(cashReceived, 10).toLocaleString()}\nお釣り: ¥${change.toLocaleString()}` : ""
+      `決済完了！\n支払い方法: ${methodText}\n合計: ¥${grandTotal.toLocaleString()}${
+        paymentMethod === "cash"
+          ? `\n受取: ¥${(parseInt(cashReceived || "0", 10) || 0).toLocaleString()}\nお釣り: ¥${change.toLocaleString()}`
+          : ""
       }`
     );
-  };
 
-  // カートをクリア
-  const clearCart = () => {
-    if (cart.length === 0) return;
-    if (confirm("カートをクリアしますか？")) {
-      setCart([]);
-    }
+    router.push("/pos");
   };
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24 lg:pb-4">
-      {/* 検索バー（最上部固定） */}
+      {/* top bar */}
       <div className="sticky top-0 z-40 border-b border-gray-200 bg-white shadow-sm">
         <div className="mx-auto max-w-6xl p-4">
           <div className="flex items-center gap-2">
@@ -373,227 +381,160 @@ export default function CashierPage() {
               className="flex-1 rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
               autoFocus
             />
-            <Link
-              href="/pos"
+            <button
+              onClick={handleBack}
               className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 transition-all active:bg-gray-50"
             >
               戻る
-            </Link>
+            </button>
           </div>
+
+          {hasTableContext && (
+            <div className="mt-2 text-sm text-gray-600">
+              追加先: <span className="font-semibold text-blue-700">{tableNameParam || baseOrder?.tableName || "未設定"}</span>{" "}
+              <span className="ml-2 text-xs text-gray-500">
+                （既存伝票は右カート上段に表示、追加分は下に加算されます）
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="mx-auto max-w-6xl p-4">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* メニューエリア */}
+          {/* menu */}
           <div className="lg:col-span-2">
-            <h2 className="mb-4 text-lg font-semibold text-gray-800 lg:text-xl">
-              メニュー
-            </h2>
+            <h2 className="mb-4 text-lg font-semibold text-gray-800 lg:text-xl">メニュー</h2>
+
             {filteredMenu.length === 0 ? (
               <div className="rounded-lg bg-white p-8 text-center text-gray-500">
                 {searchQuery ? "検索結果が見つかりません" : "メニューがありません"}
               </div>
             ) : (
-              // タグごとにセクション表示
-              (() => {
-                // メインタグ（tags[0]）でグループ化
-                const menuByTag = filteredMenu.reduce((acc, item) => {
-                  const mainTag = item.tags && item.tags.length > 0 ? item.tags[0] : "その他";
-                  if (!acc[mainTag]) {
-                    acc[mainTag] = [];
-                  }
-                  acc[mainTag].push(item);
-                  return acc;
-                }, {} as Record<string, typeof filteredMenu>);
-
-                // タグの順序を決定（アルファベット順）
-                const allTags = Object.keys(menuByTag).sort();
-
-                return (
-                  <div className="space-y-6">
-                    {allTags.map((tag) => {
-                      const items = menuByTag[tag] || [];
-                      if (items.length === 0) return null;
-
-                      return (
-                        <div
-                          key={tag}
-                          className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+              <div className="space-y-6">
+                {menuGrouped.map(([tag, items]) => (
+                  <div key={tag} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                    <h3 className="mb-3 text-base font-semibold text-gray-800 lg:text-lg">{tag}</h3>
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 lg:gap-4">
+                      {items.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => addToCart(item)}
+                          className="flex min-h-[100px] flex-col items-center justify-center rounded-lg bg-gray-50 p-4 transition-all active:scale-95 active:bg-gray-100 lg:h-32 lg:hover:bg-gray-100"
                         >
-                          <h3 className="mb-3 text-base font-semibold text-gray-800 lg:text-lg">
-                            {tag}
-                          </h3>
-                          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 lg:gap-4">
-                            {items.map((item) => (
-                              <button
-                                key={item.id}
-                                onClick={() => addToCart(item)}
-                                className="flex min-h-[100px] flex-col items-center justify-center rounded-lg bg-gray-50 p-4 transition-all active:scale-95 active:bg-gray-100 lg:h-32 lg:hover:bg-gray-100"
-                              >
-                                <div className="text-base font-semibold text-gray-900 lg:text-lg">
-                                  {item.name}
-                                </div>
-                                <div className="mt-1 text-xl font-bold text-blue-600 lg:mt-2 lg:text-2xl">
-                                  ¥{item.price.toLocaleString()}
-                                </div>
-                              </button>
-                            ))}
+                          <div className="text-base font-semibold text-gray-900 lg:text-lg">{item.name}</div>
+                          <div className="mt-1 text-xl font-bold text-blue-600 lg:mt-2 lg:text-2xl">
+                            ¥{item.price.toLocaleString()}
                           </div>
-                        </div>
-                      );
-                    })}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                );
-              })()
+                ))}
+              </div>
             )}
           </div>
 
-          {/* カートエリア（PC用） */}
+          {/* cart */}
           <div className="hidden lg:col-span-1 lg:block">
             <div className="sticky top-20 rounded-lg bg-white p-6 shadow-lg">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-gray-800">カート</h2>
-                {cart.length > 0 && (
-                  <button
-                    onClick={clearCart}
-                    className="text-sm text-red-600 transition-all active:text-red-700"
-                  >
-                    クリア
+                {addCart.length > 0 && (
+                  <button onClick={clearAddCart} className="text-sm text-red-600 transition-all active:text-red-700">
+                    追加分クリア
                   </button>
                 )}
               </div>
 
-              {cart.length === 0 ? (
-                <p className="py-8 text-center text-gray-500">カートは空です</p>
-              ) : (
-                <>
-                  <div className="mb-4 max-h-[400px] space-y-2 overflow-y-auto">
-                    {cart.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center justify-between rounded bg-gray-50 p-3"
-                      >
-                        <div className="flex-1">
-                          <div className="font-medium text-gray-900">
-                            {item.name}
-                          </div>
-                          <div className="text-sm text-gray-600">
-                            ¥{item.price.toLocaleString()} × {item.qty}
-                          </div>
-                          <div className="mt-1 text-sm font-semibold text-blue-600">
-                            小計: ¥{(item.price * item.qty).toLocaleString()}
-                          </div>
+              {/* base order summary */}
+              {hasTableContext && baseItems.length > 0 && (
+                <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div className="mb-2 flex items-center justify-between text-sm font-semibold text-blue-800">
+                    <span>現在の伝票</span>
+                    <span className="text-xs font-bold">{(tableNameParam || baseOrder?.tableName || "").trim()} / {baseOrder?.people ?? 0}名</span>
+                  </div>
+                  <div className="space-y-1">
+                    {baseItems.slice(0, 5).map((it) => (
+                      <div key={it.id} className="flex items-center justify-between text-sm text-blue-900">
+                        <div className="truncate">
+                          {it.name} <span className="text-xs text-blue-700">¥{it.price.toLocaleString()} × {it.qty}</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => updateCartQuantity(item.id, -1)}
-                            className="h-8 w-8 rounded bg-gray-200 text-gray-700 transition-all active:bg-gray-300"
-                          >
-                            −
-                          </button>
-                          <span className="w-8 text-center font-semibold">
-                            {item.qty}
-                          </span>
-                          <button
-                            onClick={() => updateCartQuantity(item.id, 1)}
-                            className="h-8 w-8 rounded bg-gray-200 text-gray-700 transition-all active:bg-gray-300"
-                          >
-                            +
-                          </button>
-                          <button
-                            onClick={() => removeFromCart(item.id)}
-                            className="ml-2 h-8 w-8 rounded bg-red-100 text-red-600 transition-all active:bg-red-200"
-                          >
-                            ×
-                          </button>
-                        </div>
+                        <div className="font-bold">¥{(it.price * it.qty).toLocaleString()}</div>
                       </div>
                     ))}
+                    {baseItems.length > 5 && (
+                      <div className="text-xs text-blue-700 opacity-80">…他 {baseItems.length - 5} 件</div>
+                    )}
                   </div>
-
-                  <div className="mb-4 border-t-2 border-gray-400 pt-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-2xl font-bold text-gray-900">合計</span>
-                      <span className="text-4xl font-bold text-blue-600">
-                        ¥{total.toLocaleString()}
-                      </span>
-                    </div>
+                  <div className="mt-2 flex items-center justify-between border-t border-blue-200 pt-2 text-sm font-bold text-blue-900">
+                    <span>小計（既存）</span>
+                    <span>¥{baseTotal.toLocaleString()}</span>
                   </div>
-
-                  <button
-                    onClick={goToCheckout}
-                    className="w-full rounded-lg bg-blue-600 py-4 text-xl font-bold text-white transition-all active:scale-95 active:bg-blue-700"
-                  >
-                    会計へ
-                  </button>
-                </>
+                </div>
               )}
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* スマホ用: 下部固定カート */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-gray-200 bg-white shadow-2xl lg:hidden">
-        <div className="mx-auto max-w-md p-4">
-          {cart.length > 0 && (
-            <div className="mb-3 max-h-[200px] space-y-2 overflow-y-auto">
-              {cart.map((item) => (
-                <div
-                  key={item.id}
-                    className="flex items-center justify-between rounded bg-gray-50 p-2"
-                  >
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-gray-900">
-                        {item.name}
+              {/* add cart */}
+              {addCart.length === 0 ? (
+                <p className="py-4 text-center text-gray-500">
+                  {hasTableContext && baseItems.length > 0 ? "追加分カートは空です" : "カートは空です"}
+                  {hasTableContext && baseItems.length > 0 && (
+                    <span className="block text-xs text-gray-400 mt-1">（既存伝票は上に表示中）</span>
+                  )}
+                </p>
+              ) : (
+                <div className="mb-4 max-h-[360px] space-y-2 overflow-y-auto">
+                  {addCart.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between rounded bg-gray-50 p-3">
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-900">{item.name}</div>
+                        <div className="text-sm text-gray-600">¥{item.price.toLocaleString()} × {item.qty}</div>
+                        <div className="mt-1 text-sm font-semibold text-blue-600">
+                          小計: ¥{(item.price * item.qty).toLocaleString()}
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-600">
-                        ¥{item.price.toLocaleString()} × {item.qty} = ¥{(item.price * item.qty).toLocaleString()}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => updateCartQty(item.id, -1)}
+                          className="h-8 w-8 rounded bg-gray-200 text-gray-700 transition-all active:bg-gray-300"
+                        >
+                          −
+                        </button>
+                        <span className="w-8 text-center font-semibold">{item.qty}</span>
+                        <button
+                          onClick={() => updateCartQty(item.id, 1)}
+                          className="h-8 w-8 rounded bg-gray-200 text-gray-700 transition-all active:bg-gray-300"
+                        >
+                          +
+                        </button>
+                        <button
+                          onClick={() => removeFromCart(item.id)}
+                          className="ml-2 h-8 w-8 rounded bg-red-100 text-red-600 transition-all active:bg-red-200"
+                        >
+                          ×
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => updateCartQuantity(item.id, -1)}
-                        className="h-7 w-7 rounded bg-gray-200 text-gray-700 active:bg-gray-300"
-                      >
-                        −
-                      </button>
-                      <span className="w-6 text-center text-sm font-semibold">
-                        {item.qty}
-                      </span>
-                      <button
-                        onClick={() => updateCartQuantity(item.id, 1)}
-                        className="h-7 w-7 rounded bg-gray-200 text-gray-700 active:bg-gray-300"
-                      >
-                        +
-                      </button>
-                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mb-4 border-t-2 border-gray-400 pt-4">
+                <div className="flex items-end justify-between">
+                  <span className="text-2xl font-bold text-gray-900">合計</span>
+                  <span className="text-4xl font-bold text-blue-600">¥{grandTotal.toLocaleString()}</span>
+                </div>
+                {hasTableContext && (
+                  <div className="mt-1 text-xs text-gray-500">
+                    既存: ¥{baseTotal.toLocaleString()} ＋ 追加: ¥{addTotal.toLocaleString()}
                   </div>
-                ))}
-            </div>
-          )}
-
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex-1">
-              <div className="text-xs text-gray-600">合計</div>
-              <div className="text-2xl font-bold text-blue-600">
-                ¥{total.toLocaleString()}
+                )}
               </div>
-            </div>
-            <div className="flex gap-2">
-              {cart.length > 0 && (
-                <button
-                  onClick={clearCart}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 active:bg-gray-50"
-                >
-                  クリア
-                </button>
-              )}
+
               <button
-                onClick={goToCheckout}
-                disabled={cart.length === 0}
-                className="rounded-lg bg-blue-600 px-6 py-3 text-lg font-bold text-white transition-all active:scale-95 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
+                onClick={goCheckout}
+                disabled={grandTotal <= 0}
+                className="w-full rounded-lg bg-blue-600 py-4 text-xl font-bold text-white transition-all active:scale-95 active:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
               >
                 会計へ
               </button>
@@ -602,41 +543,27 @@ export default function CashierPage() {
         </div>
       </div>
 
-      {/* 会計画面モーダル */}
+      {/* checkout modal */}
       {showCheckout && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <h2 className="mb-4 text-2xl font-bold text-gray-900">会計</h2>
 
-            {/* 注文内容 */}
             <div className="mb-4 rounded-lg bg-gray-50 p-4">
-              <h3 className="mb-2 text-sm font-semibold text-gray-700">注文内容</h3>
-              <div className="space-y-1">
-                {cart.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex justify-between text-sm text-gray-700"
-                  >
-                    <span>
-                      {item.name} × {item.qty}
-                    </span>
-                    <span>¥{(item.price * item.qty).toLocaleString()}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 flex items-center justify-between border-t border-gray-200 pt-2">
+              <h3 className="mb-2 text-sm font-semibold text-gray-700">合計</h3>
+              <div className="flex items-center justify-between">
                 <span className="text-lg font-semibold text-gray-900">合計</span>
-                <span className="text-3xl font-bold text-blue-600">
-                  ¥{total.toLocaleString()}
-                </span>
+                <span className="text-3xl font-bold text-blue-600">¥{grandTotal.toLocaleString()}</span>
               </div>
+              {hasTableContext && (
+                <div className="mt-1 text-xs text-gray-500">
+                  既存: ¥{baseTotal.toLocaleString()} ＋ 追加: ¥{addTotal.toLocaleString()}
+                </div>
+              )}
             </div>
 
-            {/* 支払い方法選択 */}
             <div className="mb-4">
-              <label className="mb-2 block text-sm font-medium text-gray-700">
-                支払い方法
-              </label>
+              <label className="mb-2 block text-sm font-medium text-gray-700">支払い方法</label>
               <div className="grid grid-cols-3 gap-2">
                 {(["cash", "card", "other"] as PaymentMethod[]).map((method) => (
                   <button
@@ -657,12 +584,9 @@ export default function CashierPage() {
               </div>
             </div>
 
-            {/* 現金の場合：受取金額入力 */}
             {paymentMethod === "cash" && (
               <div className="mb-4">
-                <label className="mb-2 block text-sm font-medium text-gray-700">
-                  受取金額
-                </label>
+                <label className="mb-2 block text-sm font-medium text-gray-700">受取金額</label>
                 <input
                   type="number"
                   value={cashReceived}
@@ -674,158 +598,22 @@ export default function CashierPage() {
                 {cashReceived && (
                   <div className="mt-2 text-right">
                     <div className="text-sm text-gray-600">お釣り</div>
-                    <div className={`text-2xl font-bold ${
-                      change >= 0 ? "text-green-600" : "text-red-600"
-                    }`}>
-                      ¥{change.toLocaleString()}
-                    </div>
+                    <div className="text-2xl font-bold text-green-600">¥{change.toLocaleString()}</div>
                   </div>
                 )}
               </div>
             )}
 
-            {/* 出口選択 */}
-            <div className="mb-4">
-              <label className="mb-2 block text-sm font-medium text-gray-700">
-                会計方法
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => {
-                    setCheckoutMode("standalone");
-                    setSelectedTableId(null);
-                    setShowTableSelect(false);
-                  }}
-                  className={`rounded-lg border-2 px-4 py-3 text-sm font-medium transition-all ${
-                    checkoutMode === "standalone"
-                      ? "border-blue-600 bg-blue-50 text-blue-700"
-                      : "border-gray-300 bg-white text-gray-700 active:bg-gray-50"
-                  }`}
-                >
-                  単発会計
-                </button>
-                <button
-                  onClick={() => {
-                    setCheckoutMode("table");
-                    setShowTableSelect(true);
-                  }}
-                  className={`rounded-lg border-2 px-4 py-3 text-sm font-medium transition-all ${
-                    checkoutMode === "table"
-                      ? "border-blue-600 bg-blue-50 text-blue-700"
-                      : "border-gray-300 bg-white text-gray-700 active:bg-gray-50"
-                  }`}
-                >
-                  テーブルに追加
-                </button>
-              </div>
-            </div>
-
-            {/* テーブル選択（ミニ配置図） */}
-            {checkoutMode === "table" && showTableSelect && (
-              <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-gray-700">テーブルを選択</h3>
-                  <div className="flex items-center gap-2">
-                    <div className="flex rounded-lg border border-gray-300 bg-white">
-                      <button
-                        onClick={() => setMiniMapFloor("1F")}
-                        className={`px-2 py-1 text-xs font-medium transition-all ${
-                          miniMapFloor === "1F"
-                            ? "rounded-lg bg-blue-600 text-white"
-                            : "text-gray-700 active:bg-gray-100"
-                        }`}
-                      >
-                        1F
-                      </button>
-                      <button
-                        onClick={() => setMiniMapFloor("2F")}
-                        className={`px-2 py-1 text-xs font-medium transition-all ${
-                          miniMapFloor === "2F"
-                            ? "rounded-lg bg-blue-600 text-white"
-                            : "text-gray-700 active:bg-gray-100"
-                        }`}
-                      >
-                        2F
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {tableConfigs
-                    .filter((config) => config.floorId === miniMapFloor)
-                    .map((config) => {
-                      const openOrder = orders.find(
-                        (o) => o.tableId === config.id && o.status === "open"
-                      );
-                      const hasClosed = orders.some(
-                        (o) => o.tableId === config.id && o.status === "closed"
-                      );
-
-                      let status: "empty" | "open" | "closed" = "empty";
-                      if (openOrder) {
-                        status = "open";
-                      } else if (hasClosed) {
-                        status = "closed";
-                      }
-
-                      const statusStyles = {
-                        empty: "bg-gray-100 text-gray-700 border-gray-300",
-                        open: "bg-blue-100 text-blue-700 border-blue-400",
-                        closed: "bg-gray-200 text-gray-600 border-gray-400",
-                      };
-
-                      return (
-                        <button
-                          key={config.id}
-                          onClick={() => {
-                            setSelectedTableId(config.id);
-                            setSelectedTableName(config.label);
-                            setShowTableSelect(false);
-                          }}
-                          className={`flex min-w-[60px] flex-col items-center justify-center rounded-lg border px-3 py-2 text-xs font-semibold transition-all active:scale-95 ${
-                            statusStyles[status]
-                          } ${
-                            selectedTableId === config.id
-                              ? "ring-2 ring-blue-500 ring-offset-1"
-                              : ""
-                          }`}
-                        >
-                          <div className="font-bold">{config.label}</div>
-                          {status === "open" && openOrder && (
-                            <div className="mt-0.5 text-[10px] opacity-80">
-                              ¥{openOrder.total.toLocaleString()}
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                </div>
-                {selectedTableId && (
-                  <div className="mt-2 text-center text-sm text-blue-600">
-                    選択中: {selectedTableName}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ボタン */}
             <div className="flex gap-3">
               <button
-                onClick={() => {
-                  setShowCheckout(false);
-                  setCheckoutMode("standalone");
-                  setSelectedTableId(null);
-                }}
+                onClick={() => setShowCheckout(false)}
                 className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-3 text-gray-700 transition-all active:scale-95"
               >
                 キャンセル
               </button>
               <button
                 onClick={confirmPayment}
-                disabled={
-                  (checkoutMode === "table" && !selectedTableId) ||
-                  (paymentMethod === "cash" && (!cashReceived || parseInt(cashReceived, 10) < total))
-                }
+                disabled={paymentMethod === "cash" && ((parseInt(cashReceived || "0", 10) || 0) < grandTotal)}
                 className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-bold text-white transition-all active:scale-95 active:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
               >
                 支払い確定
@@ -834,7 +622,40 @@ export default function CashierPage() {
           </div>
         </div>
       )}
+
+      {/* mobile bottom summary（最低限） */}
+      <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-gray-200 bg-white shadow-2xl lg:hidden">
+        <div className="mx-auto max-w-md p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1">
+              <div className="text-xs text-gray-600">合計</div>
+              <div className="text-2xl font-bold text-blue-600">¥{grandTotal.toLocaleString()}</div>
+              {hasTableContext && (
+                <div className="text-[11px] text-gray-500 mt-0.5">
+                  既存: ¥{baseTotal.toLocaleString()} / 追加: ¥{addTotal.toLocaleString()}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2">
+              {addCart.length > 0 && (
+                <button
+                  onClick={clearAddCart}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 active:bg-gray-50"
+                >
+                  追加クリア
+                </button>
+              )}
+              <button
+                onClick={goCheckout}
+                disabled={grandTotal <= 0}
+                className="rounded-lg bg-blue-600 px-6 py-3 text-lg font-bold text-white transition-all active:scale-95 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
+              >
+                会計へ
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
-

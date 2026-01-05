@@ -23,6 +23,7 @@ type Order = {
 };
 
 type TableStatus = {
+  tableId: string;
   tableName: string;
   order: Order | null;
   status: "open" | "empty" | "closed";
@@ -43,37 +44,35 @@ function safeJsonParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
+function nowISO() {
+  return new Date().toISOString();
+}
+
 export default function FloorMapPage() {
   const router = useRouter();
 
-  // フロア
   const [currentFloor, setCurrentFloor] = useState<string>("1F");
 
-  // 編集モード
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingConfigs, setEditingConfigs] = useState<TableConfig[]>([]);
   const [originalConfigs, setOriginalConfigs] = useState<TableConfig[]>([]);
   const [draggingTableId, setDraggingTableId] = useState<string | null>(null);
 
-  // テーブル名編集
   const [editingTableId, setEditingTableId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState("");
 
-  // 表示用：各テーブルの状態
   const [tableStatuses, setTableStatuses] = useState<TableStatus[]>([]);
 
-  // 新規伝票モーダル
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
+  const [selectedTableId, setSelectedTableId] = useState<string>("");
   const [selectedTableLabel, setSelectedTableLabel] = useState<string>("");
   const [newOrderPeople, setNewOrderPeople] = useState(1);
 
-  // 初期読み込み
+  // 初期ロード
   useEffect(() => {
-    // floor
     const savedFloor = localStorage.getItem(LS_KEYS.currentFloor);
     if (savedFloor === "1F" || savedFloor === "2F") setCurrentFloor(savedFloor);
 
-    // configs
     const raw = localStorage.getItem(LS_KEYS.tableConfigs);
     if (raw) {
       const configs = safeJsonParse<any[]>(raw, []);
@@ -92,7 +91,6 @@ export default function FloorMapPage() {
     }
   }, []);
 
-  // フロア保存
   useEffect(() => {
     localStorage.setItem(LS_KEYS.currentFloor, currentFloor);
   }, [currentFloor]);
@@ -105,59 +103,132 @@ export default function FloorMapPage() {
     return currentConfigs.filter((c) => c.floorId === currentFloor);
   }, [currentConfigs, currentFloor]);
 
-  // ステータス更新（編集モード中は止める）
-  useEffect(() => {
-    if (currentConfigs.length === 0) return;
-
-    const loadStatuses = () => {
-      const orders = safeJsonParse<Order[]>(
-        localStorage.getItem(LS_KEYS.orders),
-        []
-      );
-
-      const statuses: TableStatus[] = floorConfigs.map((config) => {
-        const openOrder = orders
-          .filter((o) => o.tableName === config.label && o.status === "open")
-          .sort(
-            (a, b) =>
-              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-          )[0];
-
-        if (openOrder) {
-          return { tableName: config.label, order: openOrder, status: "open" };
-        }
-
-        const hasClosed = orders.some(
-          (o) => o.tableName === config.label && o.status === "closed"
-        );
-
-        return {
-          tableName: config.label,
-          order: null,
-          status: hasClosed ? "closed" : "empty",
-        };
-      });
-
-      setTableStatuses(statuses);
-    };
-
-    loadStatuses();
-
-    if (isEditMode) return;
-    const t = setInterval(loadStatuses, 3000);
-    return () => clearInterval(t);
-  }, [floorConfigs, currentConfigs, isEditMode]);
-
-  // open伝票があるか
-  const hasOpenOrder = (tableLabel: string): boolean => {
+  /**
+   * ✅ 重要：open伝票の tableId が古い/別形式のまま混ざってるので、
+   * tableNameで拾えたopen伝票は config.id に正規化（migration）する。
+   */
+  const computeStatuses = () => {
     const orders = safeJsonParse<Order[]>(
       localStorage.getItem(LS_KEYS.orders),
       []
     );
-    return orders.some((o) => o.tableName === tableLabel && o.status === "open");
+
+    let didMigrate = false;
+    const migratedOrders = [...orders];
+
+    const statuses: TableStatus[] = floorConfigs.map((config) => {
+      // まず tableId で open を探す（最優先）
+      const openById = migratedOrders
+        .filter((o) => o.status === "open" && o.tableId === config.id)
+        .sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        )[0];
+
+      if (openById) {
+        return {
+          tableId: config.id,
+          tableName: config.label,
+          order: openById,
+          status: "open",
+        };
+      }
+
+      // 互換：古いデータで tableName でしか一致しないopenを拾う
+      const openByName = migratedOrders
+        .filter((o) => o.status === "open" && o.tableName === config.label)
+        .sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        )[0];
+
+      if (openByName) {
+        // ✅ migration：tableIdが違うなら config.id に寄せる
+        if (openByName.tableId !== config.id) {
+          const idx = migratedOrders.findIndex((o) => o.id === openByName.id);
+          if (idx >= 0) {
+            migratedOrders[idx] = {
+              ...migratedOrders[idx],
+              tableId: config.id,
+              tableName: config.label,
+              updatedAt: migratedOrders[idx].updatedAt || nowISO(),
+            };
+            didMigrate = true;
+          }
+        }
+
+        // 返す表示用 order は「migration後のもの」を返す
+        const after = migratedOrders.find((o) => o.id === openByName.id) || openByName;
+
+        return {
+          tableId: config.id,
+          tableName: config.label,
+          order: after,
+          status: "open",
+        };
+      }
+
+      const hasClosedById = migratedOrders.some(
+        (o) => o.status === "closed" && o.tableId === config.id
+      );
+      const hasClosedByName = migratedOrders.some(
+        (o) => o.status === "closed" && o.tableName === config.label
+      );
+
+      return {
+        tableId: config.id,
+        tableName: config.label,
+        order: null,
+        status: hasClosedById || hasClosedByName ? "closed" : "empty",
+      };
+    });
+
+    // ✅ migrationが走ったら保存して全画面へ通知
+    if (didMigrate) {
+      localStorage.setItem(LS_KEYS.orders, JSON.stringify(migratedOrders));
+      window.dispatchEvent(new Event("ordersUpdated"));
+    }
+
+    setTableStatuses(statuses);
   };
 
-  // ===== 編集操作 =====
+  // 初回 + 更新監視
+  useEffect(() => {
+    if (floorConfigs.length === 0) return;
+
+    computeStatuses();
+
+    if (isEditMode) return;
+
+    const onOrdersUpdated = () => computeStatuses();
+    const onTableConfigUpdated = () => computeStatuses();
+
+    window.addEventListener("ordersUpdated", onOrdersUpdated);
+    window.addEventListener("tableConfigUpdated", onTableConfigUpdated);
+
+    // 念のため保険ポーリング
+    const t = setInterval(computeStatuses, 3000);
+
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("ordersUpdated", onOrdersUpdated);
+      window.removeEventListener("tableConfigUpdated", onTableConfigUpdated);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [floorConfigs, isEditMode, currentFloor]);
+
+  const hasOpenOrder = (tableId: string, tableLabel: string): boolean => {
+    const orders = safeJsonParse<Order[]>(
+      localStorage.getItem(LS_KEYS.orders),
+      []
+    );
+    return orders.some(
+      (o) =>
+        o.status === "open" &&
+        (o.tableId === tableId || o.tableName === tableLabel)
+    );
+  };
+
   const startEdit = () => {
     setOriginalConfigs(JSON.parse(JSON.stringify(currentConfigs)));
     setIsEditMode(true);
@@ -170,7 +241,6 @@ export default function FloorMapPage() {
   };
 
   const saveEdit = () => {
-    // 編集中の名前を確定
     if (editingTableId) {
       setEditingConfigs((prev) =>
         prev.map((c) =>
@@ -182,7 +252,6 @@ export default function FloorMapPage() {
       setEditingTableId(null);
     }
 
-    // {id,label,floorId,x,y} 形式で保存
     const configsToSave = currentConfigs.map(({ id, label, floorId, x, y }) => ({
       id,
       label,
@@ -192,6 +261,8 @@ export default function FloorMapPage() {
     }));
 
     localStorage.setItem(LS_KEYS.tableConfigs, JSON.stringify(configsToSave));
+    window.dispatchEvent(new Event("tableConfigUpdated"));
+
     setOriginalConfigs(JSON.parse(JSON.stringify(currentConfigs)));
     setIsEditMode(false);
   };
@@ -209,7 +280,7 @@ export default function FloorMapPage() {
   };
 
   const deleteTable = (tableId: string, tableLabel: string) => {
-    if (hasOpenOrder(tableLabel)) {
+    if (hasOpenOrder(tableId, tableLabel)) {
       alert(
         `テーブル「${tableLabel}」には開いている伝票があります。\n伝票を確定してから削除してください。`
       );
@@ -221,49 +292,49 @@ export default function FloorMapPage() {
     if (editingTableId === tableId) setEditingTableId(null);
   };
 
-  // ===== テーブルタップ =====
   const onTapTable = (tableLabel: string, tableId: string) => {
     if (isEditMode) {
-      // 名前編集へ
       setEditingTableId(tableId);
       const config = currentConfigs.find((c) => c.id === tableId);
       setEditingLabel(config?.label || "");
       return;
     }
 
-    const status = tableStatuses.find((s) => s.tableName === tableLabel);
+    const status = tableStatuses.find(
+      (s) => s.tableId === tableId || s.tableName === tableLabel
+    );
+
     if (status?.order) {
-      router.push(`/pos/tickets?table=${encodeURIComponent(tableLabel)}`);
-    } else {
-      setSelectedTableLabel(tableLabel);
-      setNewOrderPeople(1);
-      setShowNewOrderModal(true);
+      router.push(
+        `/pos/cashier?table=${encodeURIComponent(
+          tableLabel
+        )}&tableId=${encodeURIComponent(tableId)}`
+      );
+      return;
     }
+
+    setSelectedTableId(tableId);
+    setSelectedTableLabel(tableLabel);
+    setNewOrderPeople(1);
+    setShowNewOrderModal(true);
   };
 
   const createNewOrder = () => {
-    if (!selectedTableLabel) return;
+    if (!selectedTableId || !selectedTableLabel) return;
 
-    const tableConfig =
-      currentConfigs.find((c) => c.label === selectedTableLabel) ||
-      defaultTableConfigs.find((c) => c.label === selectedTableLabel);
-
-    const tableId = tableConfig?.id || selectedTableLabel;
-
-    const now = new Date();
-    const nowISO = now.toISOString();
-    const id = `order_${now.getTime()}`;
+    const id = `order_${Date.now()}`;
+    const iso = nowISO();
 
     const newOrder: Order = {
       id,
       status: "open",
-      tableId,
+      tableId: selectedTableId,
       tableName: selectedTableLabel,
       people: newOrderPeople,
       items: [],
       total: 0,
-      createdAt: nowISO,
-      updatedAt: nowISO,
+      createdAt: iso,
+      updatedAt: iso,
     };
 
     const orders = safeJsonParse<Order[]>(
@@ -272,13 +343,21 @@ export default function FloorMapPage() {
     );
     orders.push(newOrder);
     localStorage.setItem(LS_KEYS.orders, JSON.stringify(orders));
+    window.dispatchEvent(new Event("ordersUpdated"));
 
     setShowNewOrderModal(false);
-    router.push(`/pos/tickets?table=${encodeURIComponent(selectedTableLabel)}`);
+
+    router.push(
+      `/pos/cashier?table=${encodeURIComponent(
+        selectedTableLabel
+      )}&tableId=${encodeURIComponent(selectedTableId)}`
+    );
   };
 
-  // ===== ドラッグ（編集モードのみ）=====
-  const dragStart = (e: React.MouseEvent | React.TouchEvent, tableId: string) => {
+  const dragStart = (
+    e: React.MouseEvent | React.TouchEvent,
+    tableId: string
+  ) => {
     if (!isEditMode) return;
     e.preventDefault();
     setDraggingTableId(tableId);
@@ -333,7 +412,6 @@ export default function FloorMapPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-4 pb-20 lg:pb-4">
       <div className="mx-auto max-w-6xl">
-        {/* ヘッダ */}
         <div className="mb-6">
           <div className="mb-4 flex items-center justify-between">
             <h1 className="text-2xl font-bold text-gray-900 lg:text-3xl">
@@ -388,7 +466,6 @@ export default function FloorMapPage() {
             </div>
           </div>
 
-          {/* フロア切替 */}
           <div className="mb-4 flex gap-2 rounded-lg bg-white p-2 shadow">
             {(["1F", "2F"] as const).map((f) => (
               <button
@@ -405,7 +482,6 @@ export default function FloorMapPage() {
             ))}
           </div>
 
-          {/* 編集モード中のみ */}
           {isEditMode && (
             <div className="mb-4">
               <button
@@ -418,7 +494,6 @@ export default function FloorMapPage() {
           )}
         </div>
 
-        {/* 凡例 */}
         <div className="mb-4 flex flex-wrap gap-4 rounded-lg bg-white p-4 shadow">
           <div className="flex items-center gap-2">
             <div className="h-4 w-4 rounded border-2 border-blue-400 bg-blue-100" />
@@ -434,7 +509,6 @@ export default function FloorMapPage() {
           </div>
         </div>
 
-        {/* 配置図 */}
         <div className="rounded-lg bg-white p-4 shadow lg:p-6">
           <div
             data-floor-canvas="true"
@@ -445,7 +519,6 @@ export default function FloorMapPage() {
             onTouchMove={dragMove}
             onTouchEnd={dragEnd}
           >
-            {/* グリッド */}
             <div className="absolute inset-0 grid grid-cols-12 grid-rows-8 gap-1">
               {Array.from({ length: 96 }).map((_, i) => (
                 <div
@@ -457,10 +530,12 @@ export default function FloorMapPage() {
               ))}
             </div>
 
-            {/* テーブル */}
             {floorConfigs.map((config) => {
               const status = !isEditMode
-                ? tableStatuses.find((s) => s.tableName === config.label)
+                ? tableStatuses.find(
+                    (s) =>
+                      s.tableId === config.id || s.tableName === config.label
+                  )
                 : null;
 
               const order = status?.order;
@@ -581,7 +656,6 @@ export default function FloorMapPage() {
         </div>
       </div>
 
-      {/* 新規伝票作成モーダル */}
       {showNewOrderModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
@@ -615,6 +689,7 @@ export default function FloorMapPage() {
               <button
                 onClick={() => {
                   setShowNewOrderModal(false);
+                  setSelectedTableId("");
                   setSelectedTableLabel("");
                 }}
                 className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-all active:scale-95 lg:hover:bg-gray-50"
