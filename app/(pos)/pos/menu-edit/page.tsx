@@ -2,7 +2,6 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 type MenuItem = {
@@ -254,25 +253,25 @@ export default function MenuEditPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6">
+    <div className="min-h-screen bg-gray-50 p-3 sm:p-4 md:p-6">
       <div className="mx-auto max-w-6xl">
         {/* ヘッダー */}
-        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="mb-4 sm:mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">メニュー</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">メニュー</h1>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-white px-3 py-1 text-sm text-gray-700 shadow-sm">
+            <div className="mt-2 sm:mt-3 flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-white px-2 sm:px-3 py-1 text-xs sm:text-sm text-gray-700 shadow-sm">
                 追加先:{" "}
                 <span className="font-semibold">
                   {selectedOrder ? selectedOrder.tableName : "未選択"}
                 </span>
               </span>
 
-              {/* ✅ 主役ボタン：大きく */}
+              {/* ✅ 主役ボタン：大きく（モバイルでもタップしやすい） */}
               <button
                 onClick={() => setShowTicketModal(true)}
-                className="rounded-xl bg-blue-600 px-6 py-3 text-base font-bold text-white shadow-lg transition-all active:scale-95 hover:bg-blue-700"
+                className="rounded-xl bg-blue-600 px-4 sm:px-6 py-2.5 sm:py-3 text-sm sm:text-base font-bold text-white shadow-lg transition-all active:scale-95 hover:bg-blue-700 touch-manipulation min-h-[44px]"
               >
                 伝票を選ぶ
               </button>
@@ -280,29 +279,29 @@ export default function MenuEditPage() {
               {/* 編集モード */}
               <button
                 onClick={() => setIsEditMode((v) => !v)}
-                className={`rounded-xl px-4 py-3 text-base font-bold shadow-sm transition-all active:scale-95 ${
+                className={`rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base font-bold shadow-sm transition-all active:scale-95 touch-manipulation min-h-[44px] ${
                   isEditMode
                     ? "bg-orange-600 text-white hover:bg-orange-700"
                     : "bg-white text-gray-700 hover:bg-gray-50"
                 }`}
                 title="メニューの名前・値段・タグを編集"
               >
-                {isEditMode ? "編集モードON" : "編集モード"}
+                {isEditMode ? "編集ON" : "編集"}
               </button>
             </div>
           </div>
 
-          <Link
-            href="/pos"
-            className="self-start rounded-xl bg-white px-5 py-3 text-sm font-semibold text-gray-700 shadow-sm transition-all active:scale-95 hover:bg-gray-50 lg:self-auto"
+          <button
+            onClick={() => router.push("/pos")}
+            className="self-start rounded-xl bg-white px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold text-gray-700 shadow-sm transition-all hover:bg-gray-50 lg:self-auto min-h-[44px] inline-flex items-center justify-center touch-manipulation"
           >
             配置図に戻る
-          </Link>
+          </button>
         </div>
 
         {/* 概要 */}
-        <div className="mb-4 rounded-xl bg-white p-4 shadow">
-          <div className="text-sm text-gray-700">
+        <div className="mb-3 sm:mb-4 rounded-xl bg-white p-3 sm:p-4 shadow">
+          <div className="text-xs sm:text-sm text-gray-700">
             タグ数: <span className="font-semibold">{tags.length}</span> / メニュー数:{" "}
             <span className="font-semibold">{items.length}</span> / 開いている伝票:{" "}
             <span className="font-semibold">{openOrders.length}</span>
@@ -330,17 +329,17 @@ export default function MenuEditPage() {
         </div>
 
         {/* メニュー一覧 */}
-        <div className="rounded-xl bg-white p-6 shadow">
+        <div className="rounded-xl bg-white p-3 sm:p-4 md:p-6 shadow">
           {items.length === 0 ? (
-            <div className="py-16 text-center text-gray-500">
+            <div className="py-12 sm:py-16 text-center text-sm sm:text-base text-gray-500">
               メニューが見つかりません（localStorageの menuItems / register_menu を確認）
             </div>
           ) : (
-            <div className="space-y-8">
+            <div className="space-y-6 sm:space-y-8">
               {grouped.map(([tag, list]) => (
                 <div key={tag}>
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-lg font-bold text-gray-900">{tag}</div>
+                  <div className="mb-2 sm:mb-3 flex items-center justify-between">
+                    <div className="text-base sm:text-lg font-bold text-gray-900">{tag}</div>
                     <div className="text-xs text-gray-500">
                       {list.length} 件
                     </div>
@@ -350,10 +349,10 @@ export default function MenuEditPage() {
                     {list.map((it) => (
                       <div
                         key={it.id}
-                        className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3"
+                        className="flex items-center justify-between rounded-lg border border-gray-200 px-3 sm:px-4 py-2.5 sm:py-3"
                       >
-                        <div>
-                          <div className="font-semibold text-gray-900">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm sm:text-base font-semibold text-gray-900 truncate">
                             {it.name}
                           </div>
                           <div className="mt-1 text-xs text-gray-500">
@@ -362,15 +361,15 @@ export default function MenuEditPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-lg font-bold">
+                        <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                          <div className="text-base sm:text-lg font-bold whitespace-nowrap">
                             {formatYen(it.price)}
                           </div>
 
                           {isEditMode && (
                             <button
                               onClick={() => openEditItem(it)}
-                              className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-bold text-white transition-all active:scale-95 hover:bg-black"
+                              className="rounded-lg bg-gray-900 px-3 sm:px-4 py-2 text-xs sm:text-sm font-bold text-white transition-all active:scale-95 hover:bg-black touch-manipulation min-h-[36px] sm:min-h-[44px]"
                             >
                               編集
                             </button>
@@ -387,9 +386,9 @@ export default function MenuEditPage() {
 
         {/* 伝票選択モーダル */}
         {showTicketModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-              <div className="mb-4 text-lg font-bold text-gray-900">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
+            <div className="w-full max-w-lg rounded-2xl bg-white p-4 sm:p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+              <div className="mb-4 text-base sm:text-lg font-bold text-gray-900">
                 追加先の伝票を選択
               </div>
 
@@ -403,13 +402,13 @@ export default function MenuEditPage() {
                     <button
                       key={o.id}
                       onClick={() => jumpToCashier(o)}
-                      className="w-full rounded-xl border border-gray-200 bg-white p-4 text-left transition-all active:scale-[0.99] hover:bg-gray-50"
+                      className="w-full rounded-xl border border-gray-200 bg-white p-3 sm:p-4 text-left transition-all active:scale-[0.99] hover:bg-gray-50 touch-manipulation min-h-[60px]"
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="font-bold text-gray-900">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm sm:text-base font-bold text-gray-900 truncate">
                           {o.tableName}（{o.people}名）
                         </div>
-                        <div className="font-bold text-gray-900">
+                        <div className="text-sm sm:text-base font-bold text-gray-900 whitespace-nowrap">
                           {formatYen(o.total)}
                         </div>
                       </div>
@@ -421,19 +420,22 @@ export default function MenuEditPage() {
                 </div>
               )}
 
-              <div className="mt-5 flex gap-3">
+              <div className="mt-4 sm:mt-5 flex gap-2 sm:gap-3">
                 <button
                   onClick={() => setShowTicketModal(false)}
-                  className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-all active:scale-95 hover:bg-gray-50"
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base text-gray-700 transition-all active:scale-95 hover:bg-gray-50 touch-manipulation min-h-[44px]"
                 >
                   閉じる
                 </button>
-                <Link
-                  href="/pos"
-                  className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-center font-bold text-white transition-all active:scale-95 hover:bg-blue-700"
+                <button
+                  onClick={() => {
+                    setShowTicketModal(false);
+                    router.push("/pos");
+                  }}
+                  className="flex-1 rounded-lg bg-blue-600 px-3 sm:px-4 py-2.5 sm:py-3 text-center text-sm sm:text-base font-bold text-white transition-all hover:bg-blue-700 min-h-[44px] flex items-center justify-center touch-manipulation"
                 >
                   席の図へ
-                </Link>
+                </button>
               </div>
             </div>
           </div>
@@ -441,27 +443,27 @@ export default function MenuEditPage() {
 
         {/* メニュー編集モーダル */}
         {showItemModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-              <div className="mb-4 text-lg font-bold text-gray-900">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
+            <div className="w-full max-w-lg rounded-2xl bg-white p-4 sm:p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+              <div className="mb-4 text-base sm:text-lg font-bold text-gray-900">
                 メニュー編集
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3 sm:space-y-4">
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                  <label className="mb-1 block text-xs sm:text-sm font-medium text-gray-700">
                     メニュー名
                   </label>
                   <input
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm sm:text-base focus:border-blue-500 focus:outline-none"
                     autoFocus
                   />
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                  <label className="mb-1 block text-xs sm:text-sm font-medium text-gray-700">
                     値段（円）
                   </label>
                   <input
@@ -469,7 +471,7 @@ export default function MenuEditPage() {
                     value={editPrice}
                     onChange={(e) => setEditPrice(Number(e.target.value) || 0)}
                     min={0}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm sm:text-base focus:border-blue-500 focus:outline-none"
                   />
                   <div className="mt-1 text-xs text-gray-500">
                     表示: {formatYen(editPrice)}
@@ -477,14 +479,14 @@ export default function MenuEditPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                  <label className="mb-1 block text-xs sm:text-sm font-medium text-gray-700">
                     タグ（カンマ区切り / 複数OK）
                   </label>
                   <input
                     value={editTagsText}
                     onChange={(e) => setEditTagsText(e.target.value)}
                     placeholder="例）おすすめ, ビール"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm sm:text-base focus:border-blue-500 focus:outline-none"
                   />
                   <div className="mt-2 flex flex-wrap gap-2">
                     {tags.slice(0, 20).map((t) => (
@@ -502,7 +504,7 @@ export default function MenuEditPage() {
                             : [...current, t];
                           setEditTagsText(next.join(", "));
                         }}
-                        className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700 hover:bg-gray-200"
+                        className="rounded-full bg-gray-100 px-2 sm:px-3 py-1 text-xs text-gray-700 hover:bg-gray-200 touch-manipulation min-h-[32px]"
                         title="クリックで追加"
                       >
                         + {t}
@@ -510,24 +512,24 @@ export default function MenuEditPage() {
                     ))}
                   </div>
                   <div className="mt-1 text-xs text-gray-500">
-                    まずは“簡単に運用できる方式”として、入力でタグを増やせます（保存時にタグ一覧にも反映）。
+                    まずは"簡単に運用できる方式"として、入力でタグを増やせます（保存時にタグ一覧にも反映）。
                   </div>
                 </div>
               </div>
 
-              <div className="mt-6 flex gap-3">
+              <div className="mt-5 sm:mt-6 flex gap-2 sm:gap-3">
                 <button
                   onClick={() => {
                     setShowItemModal(false);
                     setEditingItemId(null);
                   }}
-                  className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-all active:scale-95 hover:bg-gray-50"
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base text-gray-700 transition-all active:scale-95 hover:bg-gray-50 touch-manipulation min-h-[44px]"
                 >
                   キャンセル
                 </button>
                 <button
                   onClick={saveEditItem}
-                  className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-bold text-white transition-all active:scale-95 hover:bg-blue-700"
+                  className="flex-1 rounded-lg bg-blue-600 px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base font-bold text-white transition-all active:scale-95 hover:bg-blue-700 touch-manipulation min-h-[44px]"
                 >
                   保存
                 </button>
