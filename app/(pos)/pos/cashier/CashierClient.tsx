@@ -161,7 +161,19 @@ export default function CashierClient() {
         return;
       }
 
-      setMenu((data ?? []) as MenuItemRow[]);
+      // データを正しい型に変換
+      const transformedData: MenuItemRow[] = (data ?? []).map((item: any) => ({
+        id: item.id,
+        shop_id: item.shop_id,
+        name: item.name,
+        price: item.price,
+        is_active: item.is_active,
+        menu_item_tags: item.menu_item_tags?.map((mit: any) => ({
+          tag: Array.isArray(mit.tag) ? mit.tag[0] : mit.tag,
+        })) || [],
+      }));
+
+      setMenu(transformedData);
     };
 
     loadMenu();
